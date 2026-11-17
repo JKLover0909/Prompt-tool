@@ -1,7 +1,9 @@
 # Copy to ~/.config/prompt-tool/config.yaml and edit.
 # The file is hot-reloaded while the service runs (invalid edits are ignored with an error in the log).
 
-timezone: Asia/Ho_Chi_Minh   # schedule times below are in this timezone
+timezone: Asia/Ho_Chi_Minh   # schedule times are in this timezone
+web_host: 127.0.0.1   # this machine only; set 0.0.0.0 to serve the LAN (login token required)
+web_port: 8765
 catch_up_minutes: 10         # if the service was down/asleep at the due time, still fire if it is back within this window
 
 # Extra environment for `claude`. Usually unnecessary: ~/.claude/settings.json already points

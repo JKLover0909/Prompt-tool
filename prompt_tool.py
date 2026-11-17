@@ -11,11 +11,14 @@ jobs are created and edited. Run ``python3 prompt_tool.py --help`` for the CLI.
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
 import json
 import logging
 import logging.handlers
 import os
 import re
+import secrets
 import shutil
 import signal
 import sqlite3
@@ -26,6 +29,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timedelta
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -40,6 +44,7 @@ STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "stat
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 ROUTER_DB = Path.home() / ".9router" / "db" / "data.sqlite"
 DEFAULT_PORT = 8765
+DEFAULT_HOST = "127.0.0.1"  # set web_host: 0.0.0.0 in the config to serve the LAN (login is always required)
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 PERMISSION_MODES = ["default", "acceptEdits", "plan", "bypassPermissions"]
@@ -90,6 +95,7 @@ class Config:
     catch_up_s: int
     env: dict[str, str]
     web_port: int = DEFAULT_PORT
+    web_host: str = DEFAULT_HOST
     jobs: list[Job] = field(default_factory=list)
 
 
@@ -213,7 +219,14 @@ def parse_config(raw) -> Config:
         port = int(raw.get("web_port", DEFAULT_PORT))
     except (TypeError, ValueError):
         raise ConfigError("catch_up_minutes and web_port must be numbers") from None
-    cfg = Config(tz=tz, claude_bin=claude_bin, catch_up_s=catch_up, env=env, web_port=port)
+    if not 0 <= port <= 65535:
+        raise ConfigError("web_port must be between 0 (off) and 65535")
+    host = str(raw.get("web_host", DEFAULT_HOST)).strip()
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        raise ConfigError(f"web_host must be an IPv4 address such as 127.0.0.1 or 0.0.0.0, got {host!r}") from None
+    cfg = Config(tz=tz, claude_bin=claude_bin, catch_up_s=catch_up, env=env, web_port=port, web_host=host)
     names: set[str] = set()
     for i, j in enumerate(raw.get("jobs") or []):
         try:
@@ -248,6 +261,7 @@ DEFAULT_CONFIG_TEXT = """\
 timezone: Asia/Ho_Chi_Minh
 catch_up_minutes: 10
 web_port: 8765
+web_host: 127.0.0.1   # 0.0.0.0 = reachable from the LAN (needs the access token)
 jobs: []
 """
 
@@ -543,12 +557,33 @@ class History(_JsonFile):
 # ----------------------------------------------------------------------- service
 
 
+def load_token(state_dir: Path, rotate: bool = False) -> str:
+    """Web access token, stored 0600 in the state dir. Created on first use."""
+    path = state_dir / "token"
+    if not rotate:
+        try:
+            t = path.read_text().strip()
+            if len(t) >= 16:
+                return t
+        except OSError:
+            pass
+    state_dir.mkdir(parents=True, exist_ok=True)
+    t = secrets.token_urlsafe(24)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(t + "\n")
+    os.replace(tmp, path)
+    return t
+
+
 class Service:
     def __init__(self, config_path: Path, state_dir: Path):
         self.config_path = config_path
         self.cfg = load_config(config_path)
         self.state = State(state_dir / "state.json")
         self.history = History(state_dir / "runs.json")
+        self.token = load_token(state_dir)
         self.lock = threading.RLock()  # serialises config edits
         self.running: set[str] = set()
         self.running_lock = threading.Lock()
@@ -684,10 +719,14 @@ def _check_job_payload(body, svc: Service) -> dict:
 # --------------------------------------------------------------------------- web
 
 
-def make_handler(svc: Service, port: int):
-    hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-    origins = {f"http://{h}" for h in hosts}
+def make_handler(svc: Service):
     index = HERE / "web" / "index.html"
+    login_page = HERE / "web" / "login.html"
+    # Stateless session cookie derived from the token: rotating the token logs everyone out.
+    session_cookie = hmac.new(svc.token.encode(), b"prompt-tool-session", "sha256").hexdigest()
+    fails: dict[str, list[float]] = {}  # client ip -> monotonic times of recent failed logins
+    fails_lock = threading.Lock()
+    MAX_FAILS, FAIL_WINDOW_S = 5, 300
 
     class Handler(BaseHTTPRequestHandler):
         server_version = APP
@@ -695,13 +734,16 @@ def make_handler(svc: Service, port: int):
         def log_message(self, fmt, *args):  # route http.server noise to debug
             log.debug("web %s", fmt % args)
 
-        def _send(self, code: int, payload=None, *, body: bytes | None = None, ctype="application/json; charset=utf-8"):
+        def _send(self, code: int, payload=None, *, body: bytes | None = None, ctype="application/json; charset=utf-8",
+                  headers: dict | None = None):
             if body is None:
                 body = json.dumps(payload if payload is not None else {}, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
             self.end_headers()
@@ -720,12 +762,12 @@ def make_handler(svc: Service, port: int):
 
         def _dispatch(self, method: str):
             try:
-                # DNS-rebinding / cross-site protection: only our own page may talk to us.
-                if self.headers.get("Host") not in hosts:
-                    return self._send(403, {"error": "bad Host header"})
+                # Cross-site protection: a state-changing request must come from our own page (same origin).
+                # DNS rebinding is covered by the login cookie, which a foreign hostname never carries.
                 if method != "GET":
                     origin = self.headers.get("Origin")
-                    if (origin and origin not in origins) or self.headers.get("X-Requested-With") != APP:
+                    host = self.headers.get("Host") or ""
+                    if (origin and origin != f"http://{host}") or self.headers.get("X-Requested-With") != APP:
                         return self._send(403, {"error": "cross-site request refused"})
                 url = urlsplit(self.path)
                 parts = [unquote(p) for p in url.path.strip("/").split("/") if p]
@@ -741,7 +783,48 @@ def make_handler(svc: Service, port: int):
                 log.exception("web request failed: %s %s", method, self.path)
                 self._send(500, {"error": "internal error, see the service log"})
 
+        def _authed(self) -> bool:
+            raw = self.headers.get("Cookie")
+            if not raw:
+                return False
+            try:
+                morsel = SimpleCookie(raw).get("pt_session")
+            except CookieError:
+                return False
+            return bool(morsel) and hmac.compare_digest(morsel.value.encode(), session_cookie.encode())
+
+        def _login(self):
+            ip = self.client_address[0]
+            now = time.monotonic()
+            with fails_lock:
+                if len(fails) > 1000:
+                    fails.clear()
+                recent = [t for t in fails.get(ip, []) if now - t < FAIL_WINDOW_S]
+                fails[ip] = recent
+                if len(recent) >= MAX_FAILS:
+                    return self._send(429, {"error": "Nhập sai quá nhiều lần, thử lại sau vài phút."})
+            body = self._body()
+            token = str(body.get("token", "")) if isinstance(body, dict) else ""
+            if not hmac.compare_digest(token.encode(), svc.token.encode()):
+                with fails_lock:
+                    fails.setdefault(ip, []).append(now)
+                log.warning("web: failed login from %s", ip)
+                return self._send(401, {"error": "Mã truy cập không đúng."})
+            with fails_lock:
+                fails.pop(ip, None)
+            log.info("web: login from %s", ip)
+            cookie = f"pt_session={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000"
+            self._send(200, {"ok": True}, headers={"Set-Cookie": cookie})
+
         def _route(self, method, parts, query):
+            if method == "POST" and parts == ["api", "login"]:
+                return self._login()
+            if not self._authed():
+                if method == "GET" and not parts:
+                    return self._send(200, body=login_page.read_bytes(), ctype="text/html; charset=utf-8")
+                return self._send(401, {"error": "login required"})
+            if method == "POST" and parts == ["api", "logout"]:
+                return self._send(200, {"ok": True}, headers={"Set-Cookie": "pt_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
             if method == "GET" and not parts:
                 return self._send(200, body=index.read_bytes(), ctype="text/html; charset=utf-8")
             if not parts or parts[0] != "api":
@@ -807,16 +890,18 @@ def make_handler(svc: Service, port: int):
     return Handler
 
 
-def start_web(svc: Service, port: int) -> ThreadingHTTPServer | None:
+def start_web(svc: Service, host: str, port: int) -> ThreadingHTTPServer | None:
     if not port:
         return None
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(svc, port))
+        httpd = ThreadingHTTPServer((host, port), make_handler(svc))
     except OSError as e:
-        log.error("web UI disabled: cannot listen on 127.0.0.1:%d (%s)", port, e)
+        log.error("web UI disabled: cannot listen on %s:%d (%s)", host, port, e)
         return None
     threading.Thread(target=httpd.serve_forever, name="web", daemon=True).start()
-    log.info("web UI: http://127.0.0.1:%d", port)
+    log.info("web UI: http://%s:%d (login with the token from `prompt_tool.py token`)", host, port)
+    if not ipaddress.IPv4Address(host).is_loopback:
+        log.warning("web UI is reachable from the network over plain HTTP; use a trusted network or Tailscale")
     return httpd
 
 
@@ -831,7 +916,7 @@ def serve(config_path: Path, state_dir: Path) -> None:
     for job in cfg.jobs:
         log.info("  %-24s %s %-8s -> %s  next: %s%s", job.name, job.at.strftime("%H:%M"), job.model, job.folder,
                  next_due(job, start), "" if job.enabled else "  (disabled)")
-    httpd = start_web(svc, cfg.web_port)
+    httpd = start_web(svc, cfg.web_host, cfg.web_port)
 
     while not svc.stop.is_set():
         svc.tick()
@@ -868,10 +953,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="run the scheduler and the web UI (24/7 service)")
     sub.add_parser("check", help="validate the config and show each job's next run + resolved session")
+    t = sub.add_parser("token", help="print the web UI access token (created on first use)")
+    t.add_argument("--rotate", action="store_true", help="generate a new token (restart the service afterwards)")
     r = sub.add_parser("run", help="run one job right now (for testing)")
     r.add_argument("name")
     r.add_argument("--dry-run", action="store_true", help="print the command instead of running it")
     args = ap.parse_args(argv)
+    if args.cmd == "token":
+        print(load_token(STATE_DIR, rotate=args.rotate))
+        return 0
 
     setup_logging(args.verbose, to_file=args.cmd == "serve")
     try:

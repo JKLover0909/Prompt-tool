@@ -67,6 +67,7 @@ details summary{cursor:pointer;font-weight:600}
     <h1>Prompt Tool</h1>
     <span class="clock" id="clock"></span>
     <button class="pri" id="add">+ Thêm job</button>
+    <button id="logout" title="Đăng xuất khỏi trình duyệt này">Đăng xuất</button>
   </header>
   <p class="mut" id="sub"></p>
   <div id="jobs"></div>
@@ -125,6 +126,7 @@ async function api(method, path, body) {
     method, headers: {"Content-Type": "application/json", "X-Requested-With": "prompt-tool"},
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (r.status === 401) { location.reload(); throw new Error("Hết phiên đăng nhập"); }
   let data = null; try { data = await r.json(); } catch (_) {}
   if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
   return data;
@@ -268,6 +270,7 @@ async function openDialog(job) {
   $("dlg").showModal();
 }
 $("add").onclick = () => openDialog(null);
+$("logout").onclick = async () => { try { await api("POST", "/logout"); } catch (_) {} location.reload(); };
 $("cancel").onclick = () => $("dlg").close();
 $("folderSel").onchange = () => { syncFolderMode(); loadSessions(null); };
 $("folderTxt").onchange = () => loadSessions(null);

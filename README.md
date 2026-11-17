@@ -21,7 +21,7 @@ claude --resume <session-id> -p --model <combo> --permission-mode <mode> --outpu
 
 ## Web UI
 
-Open **http://127.0.0.1:8765** once the service is running. You can add, edit, enable/disable, delete and test-run jobs:
+Open **http://127.0.0.1:8765** once the service is running (log in with the token, see below). You can add, edit, enable/disable, delete and test-run jobs:
 
 - **Folder**: picked from the folders Claude Code already has sessions for, or any absolute path.
 - **Session**: newest of the folder (recommended) or a specific one, listed with its title and size.
@@ -29,8 +29,23 @@ Open **http://127.0.0.1:8765** once the service is running. You can add, edit, e
 - Everything is saved to `~/.config/prompt-tool/config.yaml` (previous version kept as `config.yaml.bak`) and applies
   immediately. You can also edit that file by hand.
 
-The UI only listens on `127.0.0.1`, refuses requests with a foreign `Host`/`Origin`, and has no login: anyone who can
-reach localhost on this machine can create jobs that run Claude, so do not expose the port.
+### Access from other machines and login
+
+`web_host` in the config selects where the UI listens: `127.0.0.1` (default, this machine only) or `0.0.0.0` (every
+network interface, so other machines can open `http://<this-machine-ip>:8765`). Login with an access token is
+**always** required:
+
+```bash
+python3 -I prompt_tool.py token            # print the token (created on first use, stored 0600 in ~/.local/state/prompt-tool/token)
+python3 -I prompt_tool.py token --rotate   # new token; restart the service, all browsers are logged out
+```
+
+- The browser keeps a 30-day `HttpOnly`, `SameSite=Strict` cookie; 5 wrong tokens from one address lock it for 5 minutes.
+- State-changing requests must come from the page itself (same-origin check).
+- Traffic is **plain HTTP**: the token and cookie are readable by anyone on the same network segment. Use it only on a
+  network you trust, or reach it through Tailscale/VPN, or put an HTTPS reverse proxy in front.
+- Anyone who logs in can create jobs that run Claude with the permissions you allow in the job, so treat the token like
+  a password.
 
 ## Install
 
