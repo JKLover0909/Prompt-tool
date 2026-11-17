@@ -179,7 +179,7 @@ def parse_job(j) -> Job:
         days=_parse_days(j.get("days")),
         session_id=sid,
         permission_mode=mode,
-        timeout_s=_int_in(j, "timeout_seconds", 600, 10, 3600),
+        timeout_s=_int_in(j, "timeout_seconds", 600, 0, 7 * 86400),  # 0 = no time limit
         retries=_int_in(j, "retries", 2, 0, 5),
         retry_delay_s=_int_in(j, "retry_delay_seconds", 60, 0, 600),
         enabled=bool(j.get("enabled", True)),
@@ -436,6 +436,82 @@ class Result:
     cost_usd: float | None = None
 
 
+def _kill_group(p: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(p.pid, sig)  # the child leads its own session/process group
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _terminate(p: subprocess.Popen, grace: float = 10.0) -> None:
+    """SIGTERM the whole process group, SIGKILL it if it is still alive after `grace` seconds."""
+    _kill_group(p, signal.SIGTERM)
+
+    def reaper() -> None:
+        # The direct child may exit on SIGTERM while grandchildren keep running.
+        # Always kill the process group after grace; do not use p.poll() as the
+        # completion signal for the whole tree.
+        time.sleep(grace)
+        _kill_group(p, signal.SIGKILL)
+
+    threading.Thread(target=reaper, daemon=True).start()
+
+
+class RunControl:
+    """Lets another thread stop a running attempt or a retry wait."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.event = threading.Event()
+        self.proc: subprocess.Popen | None = None
+        self.retry_wait = False
+        self.completed = False
+
+    @property
+    def cancelled(self) -> bool:
+        return self.event.is_set()
+
+    def attach(self, p: subprocess.Popen) -> None:
+        with self.lock:
+            self.retry_wait = False
+            self.completed = False
+            self.proc = p
+            cancelled = self.event.is_set()
+        if cancelled:  # stop was requested before the process existed
+            _terminate(p, grace=2)
+
+    def finish_attempt(self, p: subprocess.Popen) -> bool:
+        """Atomically close the stop window for this process and return cancelled state."""
+        with self.lock:
+            if self.proc is p:
+                self.proc = None
+                self.completed = True
+            return self.event.is_set()
+
+    def begin_retry_wait(self) -> None:
+        with self.lock:
+            self.retry_wait = True
+            self.completed = False
+
+    def cancel(self) -> bool:
+        with self.lock:
+            if self.completed or (self.proc is None and not self.retry_wait):
+                return False
+            self.event.set()
+            p = self.proc
+        if p is not None:
+            _terminate(p)
+        return True
+
+    def shutdown(self) -> None:
+        """Cancel work even if it is between attempts while the service stops."""
+        with self.lock:
+            self.event.set()
+            p = self.proc
+        if p is not None:
+            _terminate(p)
+
+
 def build_command(cfg: Config, job: Job, session_id: str) -> list[str]:
     return [
         cfg.claude_bin,
@@ -447,7 +523,7 @@ def build_command(cfg: Config, job: Job, session_id: str) -> list[str]:
     ]  # the prompt itself is sent on stdin so it can never be parsed as a flag
 
 
-def run_job_once(cfg: Config, job: Job, *, dry_run: bool = False) -> Result:
+def run_job_once(cfg: Config, job: Job, *, dry_run: bool = False, ctl: RunControl | None = None) -> Result:
     if not job.folder.is_dir():
         return Result(False, f"folder does not exist: {job.folder}")
     try:
@@ -461,37 +537,58 @@ def run_job_once(cfg: Config, job: Job, *, dry_run: bool = False) -> Result:
 
     env = {**os.environ, **cfg.env}
     try:
-        p = subprocess.run(
-            cmd, input=job.prompt, cwd=job.folder, env=env,
-            capture_output=True, text=True, timeout=job.timeout_s,
+        p = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=job.folder, env=env, text=True, start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return Result(False, f"timed out after {job.timeout_s}s", sid)
     except OSError as e:
         return Result(False, f"cannot execute {cfg.claude_bin}: {e}", sid)
+    if ctl:
+        ctl.attach(p)
+    try:
+        stdout, stderr = p.communicate(input=job.prompt, timeout=job.timeout_s or None)
+    except subprocess.TimeoutExpired:
+        _kill_group(p, signal.SIGKILL)
+        p.communicate()
+        cancelled = ctl.finish_attempt(p) if ctl else False
+        if cancelled:
+            return Result(False, "stopped by user", sid)
+        return Result(False, f"timed out after {job.timeout_s}s", sid)
+    cancelled = ctl.finish_attempt(p) if ctl else False
+    if cancelled:
+        return Result(False, "stopped by user", sid)
 
-    out = (p.stdout or "").strip()
+    out = (stdout or "").strip()
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
         data = None
     if p.returncode != 0 or not isinstance(data, dict) or data.get("is_error"):
         msg = (data or {}).get("result") if isinstance(data, dict) else None
-        msg = msg or (p.stderr or out or "no output").strip()
+        msg = msg or (stderr or out or "no output").strip()
         return Result(False, f"exit={p.returncode}: {msg[:500]}", sid)
     return Result(True, str(data.get("result", ""))[:300].replace("\n", " "), data.get("session_id", sid), data.get("total_cost_usd"))
 
 
-def run_job(cfg: Config, job: Job, *, dry_run: bool = False) -> Result:
+def run_job(cfg: Config, job: Job, *, dry_run: bool = False, ctl: RunControl | None = None) -> Result:
     res = Result(False, "not run")
     for attempt in range(1, job.retries + 2):
-        res = run_job_once(cfg, job, dry_run=dry_run)
+        if ctl and ctl.cancelled:
+            return Result(False, "stopped by user")
+        res = run_job_once(cfg, job, dry_run=dry_run, ctl=ctl)
         if res.ok:
             log.info("[%s] OK session=%s cost=%s reply=%s", job.name, res.session_id, res.cost_usd, res.detail)
             return res
+        if ctl and ctl.cancelled:
+            log.warning("[%s] stopped by user", job.name)
+            return res
         log.error("[%s] attempt %d/%d failed: %s", job.name, attempt, job.retries + 1, res.detail)
         if attempt <= job.retries:
-            time.sleep(job.retry_delay_s)
+            if ctl:
+                ctl.begin_retry_wait()
+                ctl.event.wait(job.retry_delay_s)  # a stop request wakes the wait up
+            else:
+                time.sleep(job.retry_delay_s)
     return res
 
 
@@ -586,6 +683,7 @@ class Service:
         self.token = load_token(state_dir)
         self.lock = threading.RLock()  # serialises config edits
         self.running: set[str] = set()
+        self.controls: dict[str, RunControl] = {}
         self.running_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8)
         self.stop = threading.Event()
@@ -597,13 +695,23 @@ class Service:
             if job.name in self.running:
                 return False
             self.running.add(job.name)
-        self.pool.submit(self._run, job, trigger)
+            ctl = self.controls[job.name] = RunControl()
+        self.pool.submit(self._run, job, trigger, ctl)
         return True
 
-    def _run(self, job: Job, trigger: str) -> None:
+    def stop_job(self, name: str) -> bool:
+        """Stop a running job (kills its process group and cancels its retries)."""
+        with self.running_lock:
+            ctl = self.controls.get(name)
+            if ctl is None or not ctl.cancel():
+                return False
+        log.info("[%s] stop requested", name)
+        return True
+
+    def _run(self, job: Job, trigger: str, ctl: RunControl) -> None:
         try:
             log.info("[%s] running (%s)", job.name, trigger)
-            res = run_job(self.cfg, job)
+            res = run_job(self.cfg, job, ctl=ctl)
             self.history.add({
                 "job": job.name, "at": datetime.now(self.cfg.tz).isoformat(timespec="seconds"),
                 "trigger": trigger, "ok": res.ok, "detail": res.detail,
@@ -615,6 +723,7 @@ class Service:
         finally:
             with self.running_lock:
                 self.running.discard(job.name)
+                self.controls.pop(job.name, None)
 
     def is_running(self, name: str) -> bool:
         with self.running_lock:
@@ -858,6 +967,11 @@ def make_handler(svc: Service):
                 return self._send(201, svc.job_view(svc.find(new["name"])))
             if len(route) >= 2 and route[0] == "jobs":
                 name = route[1]
+                if len(route) == 3 and route[2] == "stop" and method == "POST":
+                    svc.find(name)
+                    if not svc.stop_job(name):
+                        raise Conflict("this job is not running")
+                    return self._send(202, {"stopping": True})
                 if len(route) == 3 and route[2] == "run" and method == "POST":
                     job = svc.find(name)
                     if not svc.start(job, "manual"):
@@ -866,8 +980,13 @@ def make_handler(svc: Service):
                 if len(route) == 2 and method == "PUT":
                     new = _check_job_payload(self._body(), svc)
                     svc.find(name)
+                    if svc.is_running(name) and new["name"] != name:
+                        raise Conflict("stop the running task before renaming this job")
 
                     def edit(jobs):
+                        if svc.is_running(name):
+                            raise Conflict("stop the running task before editing this job")
+
                         if new["name"] != name and any(j["name"] == new["name"] for j in jobs):
                             raise Conflict(f"a job named {new['name']!r} already exists")
                         return [new if j["name"] == name else j for j in jobs]
@@ -877,6 +996,8 @@ def make_handler(svc: Service):
                     return self._send(200, svc.job_view(svc.find(new["name"])))
                 if len(route) == 2 and method == "DELETE":
                     svc.find(name)
+                    if svc.is_running(name):
+                        raise Conflict("stop the running task before deleting this job")
                     svc.mutate_jobs(lambda jobs: [j for j in jobs if j["name"] != name])
                     log.info("web: deleted job %s", name)
                     return self._send(200, {"deleted": name})
@@ -907,8 +1028,12 @@ def start_web(svc: Service, host: str, port: int) -> ThreadingHTTPServer | None:
 
 def serve(config_path: Path, state_dir: Path) -> None:
     svc = Service(config_path, state_dir)
+    def request_shutdown(*_):
+        # Signal handlers must remain signal-safe: the main loop cancels jobs below.
+        svc.stop.set()
+
     for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: svc.stop.set())
+        signal.signal(sig, request_shutdown)
 
     cfg = svc.cfg
     start = datetime.now(cfg.tz)
@@ -923,7 +1048,11 @@ def serve(config_path: Path, state_dir: Path) -> None:
         svc.reload_if_changed()
         svc.stop.wait(15)
 
-    log.info("stopping; waiting for running jobs")
+    # Restart/stop should not wait forever for tasks with timeout_seconds=0.
+    with svc.running_lock:
+        for ctl in svc.controls.values():
+            ctl.shutdown()
+    log.info("stopping; cancelling running jobs and waiting for cleanup")
     if httpd:
         httpd.shutdown()
     svc.pool.shutdown(wait=True)

@@ -104,6 +104,7 @@ details summary{cursor:pointer;font-weight:600}
         </label>
         <label>Thử lại khi lỗi (lần)<input type="number" id="retries" min="0" max="5"></label>
       </div>
+      <label>Giới hạn thời gian mỗi lần chạy (giây, 0 = không giới hạn)<input type="number" id="timeout" min="0" step="60"></label>
       <label style="flex-direction:row;align-items:center;gap:10px;display:flex"><span class="sw"><input type="checkbox" id="enabled"><i></i></span><span style="color:var(--fg)">Bật job này</span></label>
       <div class="form-err" id="ferr"></div>
     </div>
@@ -164,6 +165,7 @@ function renderJobs() {
       <div class="mut">Lần tới: <b>${j.enabled ? esc(fmtWhen(j.next_run)) : "đang tắt"}</b></div>
       <div class="mut">Lần gần nhất: ${last}</div>
       <div class="row">
+        ${j.running ? '<button data-act="stop" class="danger">Dừng task đang chạy</button>' : ""}
         <button data-act="run" ${j.running ? "disabled" : ""}>Chạy thử ngay</button>
         <button data-act="edit">Sửa</button>
         <button data-act="del" class="danger">Xoá</button>
@@ -196,6 +198,10 @@ $("jobs").addEventListener("click", async (ev) => {
     if (act === "run") {
       if (!confirm(`Gửi prompt ngay bây giờ cho “${name}”?\nViệc này dùng quota thật.`)) return;
       await api("POST", `/jobs/${encodeURIComponent(name)}/run`); toast("Đã bắt đầu chạy"); setTimeout(refresh, 500);
+    }
+    if (act === "stop") {
+      if (!confirm(`Dừng task đang chạy của “${name}”?\nClaude sẽ bị ngắt giữa chừng và các lần thử lại bị huỷ.`)) return;
+      await api("POST", `/jobs/${encodeURIComponent(name)}/stop`); toast("Đang dừng…"); setTimeout(refresh, 1500);
     }
     if (act === "del") {
       if (!confirm(`Xoá job “${name}”?`)) return;
@@ -255,6 +261,7 @@ async function openDialog(job) {
   $("at").value = job ? job.at : "05:00";
   $("prompt").value = job ? job.prompt : "Quota warm-up ping. Reply with the single word OK and do not use any tools.";
   $("retries").value = job ? job.retries : 2;
+  $("timeout").value = job ? job.timeout_seconds : 0;
   $("enabled").checked = job ? job.enabled : true;
   const names = combos.map(c => c.name); if (job && !names.includes(job.model)) names.unshift(job.model);
   $("model").innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
@@ -282,11 +289,11 @@ $("f").addEventListener("submit", async (ev) => {
   const body = {
     name: $("name").value.trim(), at: $("at").value, days, folder: currentFolder(),
     model: $("model").value, prompt: $("prompt").value, permission_mode: $("perm").value,
-    retries: Number($("retries").value || 0), enabled: $("enabled").checked,
+    retries: Number($("retries").value || 0), timeout_seconds: Number($("timeout").value || 0), enabled: $("enabled").checked,
     session_id: $("sess").value || null,
   };
   if (!days.length) { $("ferr").textContent = "Chọn ít nhất một ngày."; return; }
-  if (editing) { const old = S.jobs.find(j => j.name === editing); body.timeout_seconds = old.timeout_seconds; body.retry_delay_seconds = old.retry_delay_seconds; }
+  if (editing) { const old = S.jobs.find(j => j.name === editing); body.retry_delay_seconds = old.retry_delay_seconds; }
   $("save").disabled = true;
   try {
     await (editing ? api("PUT", `/jobs/${encodeURIComponent(editing)}`, body) : api("POST", "/jobs", body));
@@ -297,7 +304,7 @@ $("f").addEventListener("submit", async (ev) => {
 
 $("hist").addEventListener("toggle", () => { if ($("hist").open) renderHistory().catch(e => toast(e.message)); });
 refresh(); tickClock();
-setInterval(refresh, 10000); setInterval(tickClock, 1000);
+setInterval(refresh, 5000); setInterval(tickClock, 1000);
 </script>
 </body>
 </html>

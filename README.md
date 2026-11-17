@@ -17,7 +17,8 @@ claude --resume <session-id> -p --model <combo> --permission-mode <mode> --outpu
 - The prompt and the reply are appended to that session, so they appear when you resume it.
 - `~/.local/state/prompt-tool/state.json` records each job's last run: restarts never repeat or skip a run, and a run
   missed by more than `catch_up_minutes` is skipped, not replayed late. Results go to `runs.json` (last 200).
-- Failed runs are retried (`retries`, `retry_delay_seconds`).
+- Failed runs are retried (`retries`, `retry_delay_seconds`). Set `timeout_seconds: 0` for no per-run limit; the web UI has a stop button for running jobs.
+- Stopping a job terminates its Claude process tree and cancels remaining retries. Service shutdown/restart also cancels running jobs; unlimited tasks cannot block a restart forever.
 
 ## Web UI
 
