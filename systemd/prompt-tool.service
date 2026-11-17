@@ -1,0 +1,15 @@
+[Unit]
+Description=prompt-tool: scheduled prompts to Claude Code sessions via 9router
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Code/Prompt-tool
+ExecStart=/usr/bin/env python3 -I %h/Code/Prompt-tool/prompt_tool.py serve
+Restart=always
+RestartSec=10
+# claude is installed in ~/.local/bin
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

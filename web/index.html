@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prompt Tool</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1c2430;--mut:#6b7686;--bd:#dfe3ea;--pri:#2f6fed;--pri-fg:#fff;--ok:#1a8f4c;--err:#c8372d;--warn:#b7791f;--chip:#eef1f6;--shadow:0 1px 2px rgba(0,0,0,.06)}
+@media (prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b212a;--fg:#e6eaf0;--mut:#93a0b2;--bd:#2b3441;--pri:#5b92ff;--pri-fg:#0b1220;--ok:#4cc783;--err:#ff7b72;--warn:#e3b341;--chip:#252d39;--shadow:none}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:920px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+h1{font-size:20px;margin:0;flex:1}
+.clock{color:var(--mut);font-variant-numeric:tabular-nums;font-size:13px}
+button,.btn{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:8px;padding:7px 12px;cursor:pointer}
+button:hover{border-color:var(--pri)}
+button.pri{background:var(--pri);color:var(--pri-fg);border-color:var(--pri)}
+button.danger{color:var(--err)}
+button:disabled{opacity:.5;cursor:default}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
+.job-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.job-name{font-weight:600;font-size:16px;flex:1;min-width:140px}
+.time{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.meta{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.chip{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12.5px}
+.mut{color:var(--mut);font-size:13px}
+.path{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;word-break:break-all}
+.ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.empty{text-align:center;color:var(--mut);padding:28px}
+/* switch */
+.sw{position:relative;width:42px;height:24px;flex:none}
+.sw input{opacity:0;width:100%;height:100%;margin:0;position:absolute;cursor:pointer;z-index:1}
+.sw i{position:absolute;inset:0;background:var(--bd);border-radius:999px;transition:.15s}
+.sw i::after{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s}
+.sw input:checked+i{background:var(--ok)}
+.sw input:checked+i::after{left:21px}
+/* dialog */
+dialog{border:1px solid var(--bd);border-radius:14px;background:var(--card);color:var(--fg);padding:0;width:min(640px,calc(100vw - 24px));max-height:92vh}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+form{display:flex;flex-direction:column;max-height:92vh}
+.dlg-h{padding:14px 16px;border-bottom:1px solid var(--bd);font-weight:600}
+.dlg-b{padding:14px 16px;overflow:auto;display:grid;gap:12px}
+.dlg-f{padding:12px 16px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+label{display:grid;gap:4px;font-size:13px;color:var(--mut)}
+input[type=text],input[type=time],input[type=number],select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;width:100%}
+textarea{min-height:90px;resize:vertical}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:520px){.two{grid-template-columns:1fr}}
+.days{display:flex;gap:6px;flex-wrap:wrap}
+.days label{flex-direction:row;align-items:center;gap:6px;background:var(--chip);color:var(--fg);padding:5px 10px;border-radius:8px;cursor:pointer;font-size:13px}
+.hint{font-size:12.5px;color:var(--mut)}
+.chain{font-size:12.5px;color:var(--mut);font-family:ui-monospace,Menlo,Consolas,monospace}
+#msg{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:10px;opacity:0;pointer-events:none;transition:.2s;max-width:90vw;z-index:10}
+#msg.show{opacity:1}
+.form-err{color:var(--err);font-size:13px;min-height:1em}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+th{color:var(--mut);font-weight:500}
+details summary{cursor:pointer;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Prompt Tool</h1>
+    <span class="clock" id="clock"></span>
+    <button class="pri" id="add">+ Thêm job</button>
+  </header>
+  <p class="mut" id="sub"></p>
+  <div id="jobs"></div>
+  <div class="card">
+    <details id="hist"><summary>Lịch sử chạy gần đây</summary><div id="histbody" style="margin-top:10px"></div></details>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="f" autocomplete="off">
+    <div class="dlg-h" id="dlg-title">Job</div>
+    <div class="dlg-b">
+      <label>Tên job<input type="text" id="name" maxlength="60" required></label>
+      <label>Thư mục dự án (phiên chat Claude lưu theo thư mục này)
+        <select id="folderSel"></select>
+        <input type="text" id="folderTxt" placeholder="/đường/dẫn/tuyệt/đối" hidden>
+      </label>
+      <label>Session
+        <select id="sess"></select>
+        <span class="hint" id="sessHint"></span>
+      </label>
+      <div class="two">
+        <label>Giờ gửi<input type="time" id="at" required></label>
+        <label>Combo model (9router)<select id="model"></select><span class="chain" id="chain"></span></label>
+      </div>
+      <div>
+        <div class="mut" style="margin-bottom:4px">Ngày chạy</div>
+        <div class="days" id="days"></div>
+      </div>
+      <label>Prompt<textarea id="prompt" required></textarea></label>
+      <div class="two">
+        <label>Quyền của Claude khi chạy
+          <select id="perm"></select>
+        </label>
+        <label>Thử lại khi lỗi (lần)<input type="number" id="retries" min="0" max="5"></label>
+      </div>
+      <label style="flex-direction:row;align-items:center;gap:10px;display:flex"><span class="sw"><input type="checkbox" id="enabled"><i></i></span><span style="color:var(--fg)">Bật job này</span></label>
+      <div class="form-err" id="ferr"></div>
+    </div>
+    <div class="dlg-f">
+      <button type="button" id="cancel">Huỷ</button>
+      <button type="submit" class="pri" id="save">Lưu</button>
+    </div>
+  </form>
+</dialog>
+<div id="msg"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const DAYS = [["mon","T2"],["tue","T3"],["wed","T4"],["thu","T5"],["fri","T6"],["sat","T7"],["sun","CN"]];
+const PERM_LABEL = {default:"Hỏi trước khi làm (sẽ không làm được gì khi chạy ngầm)",acceptEdits:"Tự chấp nhận sửa file",plan:"Chỉ lập kế hoạch, không sửa",bypassPermissions:"Toàn quyền, không hỏi"};
+let S = {jobs: []}, combos = [], editing = null;
+
+async function api(method, path, body) {
+  const r = await fetch("/api" + path, {
+    method, headers: {"Content-Type": "application/json", "X-Requested-With": "prompt-tool"},
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = null; try { data = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
+  return data;
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function toast(t) { const m = $("msg"); m.textContent = t; m.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => m.classList.remove("show"), 2800); }
+function fmtWhen(iso) { if (!iso) return "—"; const d = new Date(iso); return d.toLocaleString("vi-VN", {weekday:"short", day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"}); }
+function daysText(days) {
+  if (days.length === 7) return "Hằng ngày";
+  if (days.length === 5 && !days.includes("sat") && !days.includes("sun")) return "Thứ 2–6";
+  return days.map(d => DAYS.find(x => x[0] === d)[1]).join(", ");
+}
+
+function renderJobs() {
+  const box = $("jobs");
+  if (!S.jobs.length) { box.innerHTML = '<div class="card empty">Chưa có job nào. Bấm “+ Thêm job” để tạo.</div>'; return; }
+  box.innerHTML = S.jobs.map(j => {
+    const lr = j.last_run;
+    const last = lr ? `<span class="${lr.ok ? "ok" : "err"}">${lr.ok ? "✓" : "✗"}</span> ${esc(fmtWhen(lr.at))} · ${esc(lr.detail).slice(0,120)}` : "Chưa chạy lần nào";
+    return `<div class="card" data-name="${esc(j.name)}">
+      <div class="job-top">
+        <span class="sw"><input type="checkbox" data-act="toggle" ${j.enabled ? "checked" : ""} aria-label="Bật/tắt"><i></i></span>
+        <span class="job-name">${esc(j.name)}</span>
+        <span class="time">${esc(j.at)}</span>
+      </div>
+      <div class="meta">
+        <span class="chip">${esc(j.model)}</span>
+        <span class="chip">${esc(daysText(j.days))}</span>
+        <span class="chip">${esc(j.permission_mode)}</span>
+        ${j.running ? '<span class="chip warn">đang chạy…</span>' : ""}
+      </div>
+      <div class="path">${esc(j.folder)} ${j.folder_exists ? "" : '<span class="err">(thư mục không tồn tại)</span>'}</div>
+      <div class="mut">Session: ${j.session_id ? esc(j.session_id.slice(0,8)) + "…" : "mới nhất của thư mục"}</div>
+      <div class="mut">Prompt: ${esc(j.prompt).slice(0,140)}${j.prompt.length > 140 ? "…" : ""}</div>
+      <div class="mut">Lần tới: <b>${j.enabled ? esc(fmtWhen(j.next_run)) : "đang tắt"}</b></div>
+      <div class="mut">Lần gần nhất: ${last}</div>
+      <div class="row">
+        <button data-act="run" ${j.running ? "disabled" : ""}>Chạy thử ngay</button>
+        <button data-act="edit">Sửa</button>
+        <button data-act="del" class="danger">Xoá</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    S = await api("GET", "/state");
+    $("sub").textContent = `Múi giờ ${S.timezone} · cấu hình: ${S.config_path}`;
+    renderJobs();
+  } catch (e) { $("sub").textContent = "Mất kết nối với service: " + e.message; }
+}
+function tickClock() { $("clock").textContent = new Date().toLocaleTimeString("vi-VN"); }
+
+async function renderHistory() {
+  const h = await api("GET", "/history");
+  $("histbody").innerHTML = h.length ? `<table><tr><th>Lúc</th><th>Job</th><th>Kết quả</th><th>Chi tiết</th></tr>${h.map(e =>
+    `<tr><td>${esc(fmtWhen(e.at))}</td><td>${esc(e.job)}<div class="mut">${esc(e.trigger)}</div></td><td class="${e.ok ? "ok" : "err"}">${e.ok ? "OK" : "Lỗi"}</td><td>${esc(e.detail).slice(0,200)}${e.cost_usd != null ? `<div class="mut">$${Number(e.cost_usd).toFixed(3)}</div>` : ""}</td></tr>`).join("")}</table>` : '<span class="mut">Chưa có lần chạy nào.</span>';
+}
+
+$("jobs").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-act]"); if (!btn) return;
+  const name = btn.closest(".card").dataset.name, job = S.jobs.find(j => j.name === name);
+  const act = btn.dataset.act;
+  try {
+    if (act === "edit") return openDialog(job);
+    if (act === "run") {
+      if (!confirm(`Gửi prompt ngay bây giờ cho “${name}”?\nViệc này dùng quota thật.`)) return;
+      await api("POST", `/jobs/${encodeURIComponent(name)}/run`); toast("Đã bắt đầu chạy"); setTimeout(refresh, 500);
+    }
+    if (act === "del") {
+      if (!confirm(`Xoá job “${name}”?`)) return;
+      await api("DELETE", `/jobs/${encodeURIComponent(name)}`); toast("Đã xoá"); refresh();
+    }
+  } catch (e) { toast(e.message); }
+});
+$("jobs").addEventListener("change", async (ev) => {
+  if (ev.target.dataset.act !== "toggle") return;
+  const name = ev.target.closest(".card").dataset.name, j = S.jobs.find(x => x.name === name);
+  try { await api("PUT", `/jobs/${encodeURIComponent(name)}`, {...j, enabled: ev.target.checked}); toast(ev.target.checked ? "Đã bật" : "Đã tắt"); }
+  catch (e) { toast(e.message); }
+  refresh();
+});
+
+/* ---------- dialog ---------- */
+let folders = [];
+const CUSTOM = "__custom__";
+
+function fillFolders(selected) {
+  const opts = folders.map(f => `<option value="${esc(f.path)}">${esc(f.name)} — ${esc(f.path)} (${f.sessions} session)</option>`);
+  if (selected && !folders.some(f => f.path === selected)) opts.unshift(`<option value="${esc(selected)}">${esc(selected)}</option>`);
+  opts.push(`<option value="${CUSTOM}">Nhập đường dẫn khác…</option>`);
+  $("folderSel").innerHTML = opts.join("");
+  $("folderSel").value = selected || (folders[0] && folders[0].path) || CUSTOM;
+  syncFolderMode();
+}
+function currentFolder() { return $("folderSel").value === CUSTOM ? $("folderTxt").value.trim() : $("folderSel").value; }
+function syncFolderMode() { const c = $("folderSel").value === CUSTOM; $("folderTxt").hidden = !c; }
+
+async function loadSessions(selected) {
+  const folder = currentFolder(), sel = $("sess");
+  sel.innerHTML = '<option value="">Session mới nhất của thư mục (khuyên dùng)</option>';
+  $("sessHint").textContent = "";
+  if (!folder.startsWith("/")) return;
+  try {
+    const list = await api("GET", "/sessions?folder=" + encodeURIComponent(folder));
+    for (const s of list) {
+      const o = document.createElement("option");
+      o.value = s.id; o.textContent = `${s.title || s.id.slice(0, 8)} · ${new Date(s.mtime * 1000).toLocaleString("vi-VN")} · ${(s.size / 1048576).toFixed(1)} MB`;
+      sel.appendChild(o);
+    }
+    if (selected) sel.value = selected;
+    $("sessHint").textContent = list.length ? "Session càng lớn thì mỗi lần gửi càng tốn quota (phải gửi lại toàn bộ ngữ cảnh)." : "Thư mục này chưa có session nào của Claude Code.";
+  } catch (e) { $("sessHint").textContent = e.message; }
+}
+
+function showChain() { const c = combos.find(x => x.name === $("model").value); $("chain").textContent = c && c.chain.length ? "→ " + c.chain.join(" → ") : ""; }
+
+async function openDialog(job) {
+  editing = job ? job.name : null;
+  $("dlg-title").textContent = job ? "Sửa job" : "Thêm job";
+  $("ferr").textContent = "";
+  try { [folders, combos] = await Promise.all([api("GET", "/folders"), api("GET", "/combos")]); }
+  catch (e) { return toast(e.message); }
+  $("name").value = job ? job.name : "";
+  $("at").value = job ? job.at : "05:00";
+  $("prompt").value = job ? job.prompt : "Quota warm-up ping. Reply with the single word OK and do not use any tools.";
+  $("retries").value = job ? job.retries : 2;
+  $("enabled").checked = job ? job.enabled : true;
+  const names = combos.map(c => c.name); if (job && !names.includes(job.model)) names.unshift(job.model);
+  $("model").innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
+  $("model").value = job ? job.model : (names.includes("tier2") ? "tier2" : names[0]);
+  showChain();
+  $("perm").innerHTML = S.permission_modes.map(m => `<option value="${m}">${esc(PERM_LABEL[m] || m)}</option>`).join("");
+  $("perm").value = job ? job.permission_mode : "bypassPermissions";
+  const on = new Set(job ? job.days : DAYS.map(d => d[0]));
+  $("days").innerHTML = DAYS.map(([k, l]) => `<label><input type="checkbox" value="${k}" ${on.has(k) ? "checked" : ""}>${l}</label>`).join("");
+  fillFolders(job ? job.folder : null);
+  $("folderTxt").value = "";
+  await loadSessions(job ? job.session_id : null);
+  $("dlg").showModal();
+}
+$("add").onclick = () => openDialog(null);
+$("cancel").onclick = () => $("dlg").close();
+$("folderSel").onchange = () => { syncFolderMode(); loadSessions(null); };
+$("folderTxt").onchange = () => loadSessions(null);
+$("model").onchange = showChain;
+
+$("f").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const days = [...$("days").querySelectorAll("input:checked")].map(i => i.value);
+  const body = {
+    name: $("name").value.trim(), at: $("at").value, days, folder: currentFolder(),
+    model: $("model").value, prompt: $("prompt").value, permission_mode: $("perm").value,
+    retries: Number($("retries").value || 0), enabled: $("enabled").checked,
+    session_id: $("sess").value || null,
+  };
+  if (!days.length) { $("ferr").textContent = "Chọn ít nhất một ngày."; return; }
+  if (editing) { const old = S.jobs.find(j => j.name === editing); body.timeout_seconds = old.timeout_seconds; body.retry_delay_seconds = old.retry_delay_seconds; }
+  $("save").disabled = true;
+  try {
+    await (editing ? api("PUT", `/jobs/${encodeURIComponent(editing)}`, body) : api("POST", "/jobs", body));
+    $("dlg").close(); toast("Đã lưu"); refresh();
+  } catch (e) { $("ferr").textContent = e.message; }
+  finally { $("save").disabled = false; }
+});
+
+$("hist").addEventListener("toggle", () => { if ($("hist").open) renderHistory().catch(e => toast(e.message)); });
+refresh(); tickClock();
+setInterval(refresh, 10000); setInterval(tickClock, 1000);
+</script>
+</body>
+</html>

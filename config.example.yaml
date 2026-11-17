@@ -1,0 +1,24 @@
+# Copy to ~/.config/prompt-tool/config.yaml and edit.
+# The file is hot-reloaded while the service runs (invalid edits are ignored with an error in the log).
+
+timezone: Asia/Ho_Chi_Minh   # schedule times below are in this timezone
+catch_up_minutes: 10         # if the service was down/asleep at the due time, still fire if it is back within this window
+
+# Extra environment for `claude`. Usually unnecessary: ~/.claude/settings.json already points
+# ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN at 9router. Do not put secrets in a file you commit.
+# env:
+#   ANTHROPIC_BASE_URL: http://127.0.0.1:20128/v1
+
+jobs:
+  - name: speakingchecking-morning
+    at: "05:00"                                  # HH:MM, 24h
+    days: daily                                  # daily | weekdays | weekends | [mon, tue, ...]
+    folder: /home/jkl/Code/SpeakingChecking      # absolute path of the project
+    model: tier2                                 # a 9router combo: tier1 | tier2 | tier3
+    prompt: "Quota warm-up ping. Reply with the single word OK and do not use any tools."
+    # session_id: fd97efd8-45fe-4182-aff1-3fdb14d55c02   # optional; default = newest session of the folder
+    # permission_mode: bypassPermissions          # default | acceptEdits | plan | bypassPermissions
+    # timeout_seconds: 600
+    # retries: 2
+    # retry_delay_seconds: 60
+    enabled: false   # sample only: set true (or toggle it in the web UI) once folder/time/prompt are right
