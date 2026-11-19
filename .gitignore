@@ -4,3 +4,8 @@ __pycache__/
 .pytest_cache/
 # local config may contain env/secrets
 config.yaml
+.env
+*.log
+.vscode/
+.idea/
+config.yaml.bak
